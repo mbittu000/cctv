@@ -11,5 +11,5 @@ func main() {
 	fmt.Println("Hello, World!")
 	go recoder.Record()
 	go api.API()
-	time.Sleep(10 * time.Hour)
+	time.Sleep(180 * 24 * time.Hour)
 }
