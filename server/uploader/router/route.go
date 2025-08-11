@@ -35,6 +35,10 @@ func GetVideos(c *fiber.Ctx) error {
 			videos = append(videos, vid.Name())
 		}
 	}
+	if len(videos) == 0 {
+		return c.JSON(fiber.Map{"error": "No videos found for the date"})
+	}
+	videos = videos[:len(videos)-1]
 	return c.JSON(fiber.Map{"videos": videos, "date": date})
 }
 
