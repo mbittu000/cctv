@@ -21,11 +21,25 @@
         "backgroundColor": "#fff"
       },
       "edgeToEdgeEnabled": true,
-      "permissions": ["WRITE_EXTERNAL_STORAGE", "READ_EXTERNAL_STORAGE"]
+      "permissions": [
+        "WRITE_EXTERNAL_STORAGE",
+        "READ_EXTERNAL_STORAGE",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE"
+      ],
+      "package": "com.mbittu00.cctv"
     },
     "web": {
       "favicon": "./assets/favicon.png"
     },
-    "plugins": ["expo-video", "expo-media-library"]
+    "plugins": [
+      "expo-video",
+      "expo-media-library"
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "e890dcee-ea48-4596-89f2-42b8368e6e32"
+      }
+    }
   }
 }

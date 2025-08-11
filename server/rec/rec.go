@@ -1,98 +1,50 @@
 package recoder
 
 import (
-	"context"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"time"
+
 	"webcam/env"
-	// "github.com/joho/godotenv"
 )
 
+// Record runs the recording loop forever
 func Record() {
 	for {
 		Work()
+		// small pause to avoid busy-looping on persistent failures
+		time.Sleep(500 * time.Millisecond)
 	}
 }
 
+// Work records a single 60-second video if the RTSP stream is reachable
 func Work() {
-	// Create context with 60-second timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel() // Always call cancel to free resources
+	// quick reachability check (TCP connect to host:port)
+	if !isRTSPReachable(env.Cam, 5*time.Second) {
+		fmt.Println("⚠️ RTSP not reachable — retrying in 5s")
+		time.Sleep(5 * time.Second)
+		return
+	}
 
+	// create/find folder only after stream check
 	fname := folder()
 	if fname == "" {
-		fmt.Println("Failed to create or find folder.")
+		fmt.Println("❌ Failed to create or find folder.")
 		return
 	}
 
-	filePath := env.Path + "/" + fname + "/" + nameProvider("file") + ".mp4"
-	fmt.Println("Recording to:", filePath)
+	// prepare filepath
+	dirPath := filepath.Join(env.Path, fname)
+	filePath := filepath.Join(dirPath, nameProvider("file")+".mp4")
+	fmt.Println("🎥 Recording to:", filePath)
 
-	start := time.Now()
-	success := saveFile(ctx, filePath)
-	elapsed := time.Since(start)
-
-	if success {
-		fmt.Printf("Recording completed and saved to: %s (Duration: %.2f seconds)\n", filePath, elapsed.Seconds())
-	} else {
-		fmt.Printf("Recording failed or timed out after %.2f seconds, moving to next iteration\n", elapsed.Seconds())
-	}
-}
-
-func folder() string {
-	dir, err := os.ReadDir(env.Path)
-	if err != nil {
-		fmt.Println("Error reading directory:", err)
-		return ""
-	}
-
-	folderName := nameProvider("folder")
-
-	found := false
-	for _, file := range dir {
-		if file.IsDir() && file.Name() == folderName {
-			found = true
-			break
-		}
-	}
-
-	if !found {
-		folderCreate(folderName)
-	}
-
-	return folderName
-}
-
-func folderCreate(name string) {
-	path := env.Path + "/" + name
-	err := os.Mkdir(path, 0755)
-	if err != nil {
-		fmt.Println("Error creating directory:", err)
-		return
-	}
-	fmt.Println("Directory created successfully:", path)
-}
-
-func nameProvider(types string) string {
-	times := time.Now().In(time.FixedZone("Asia/Kolkata", 5*60*60+30*60))
-	yy := times.Year()
-	mm := times.Month()
-	dd := times.Day()
-	hh := times.Hour()
-	min := times.Minute()
-	ss := times.Second()
-
-	if types == "folder" {
-		return fmt.Sprintf("%d-%02d-%02d", yy, mm, dd)
-	}
-	return fmt.Sprintf("%02d-%02d-%02d", hh, min, ss)
-}
-
-func saveFile(ctx context.Context, filepath string) bool {
-	// Create command with context for timeout control
-	cmd := exec.CommandContext(ctx, "ffmpeg",
+	// build ffmpeg command — record exactly 60 seconds so ffmpeg closes file cleanly
+	cmd := exec.Command(
+		"ffmpeg",
 		"-rtsp_transport", "tcp",
 		"-i", env.Cam,
 		"-use_wallclock_as_timestamps", "1",
@@ -102,53 +54,102 @@ func saveFile(ctx context.Context, filepath string) bool {
 		"-fflags", "+genpts",
 		"-fs", "18M",
 		"-movflags", "+faststart",
-		"-f", "mp4",
-		filepath,
+		"-t", "60", // exact recording duration
+		"-y", // overwrite existing files
+		filePath,
 	)
 
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
-	fmt.Println("Starting ffmpeg command with 60-second timeout...")
+	start := time.Now()
+	fmt.Println("▶️ Starting ffmpeg for 60 seconds...")
 
-	// Channel to capture command completion
-	done := make(chan error, 1)
+	err := cmd.Run()
+	elapsed := time.Since(start)
 
-	// Start command in goroutine
-	go func() {
-		done <- cmd.Run()
-	}()
-
-	// Wait for either completion or timeout
-	select {
-	case err := <-done:
-		// Command completed
-		if err != nil {
-			// Check if it was killed due to timeout
-			if ctx.Err() == context.DeadlineExceeded {
-				fmt.Println("⏰ FFmpeg command timed out after 60 seconds")
-				return false
+	if err != nil {
+		fmt.Println("❌ ffmpeg error:", err)
+		// if file exists but is tiny, remove it
+		if fi, statErr := os.Stat(filePath); statErr == nil {
+			if fi.Size() < 1024 {
+				_ = os.Remove(filePath)
 			}
-			fmt.Println("❌ Error running ffmpeg command:", err)
-			return false
 		}
-		fmt.Println("✅ FFmpeg command completed successfully")
-		return true
+		// backoff to avoid spamming ffmpeg when camera is down
+		time.Sleep(3 * time.Second)
+		return
+	}
 
-	case <-ctx.Done():
-		// Context timeout occurred
-		fmt.Println("⏰ Recording timed out after 60 seconds, killing ffmpeg process...")
+	// sanity-check output file size
+	var fi os.FileInfo
+	var statErr error
+	fi, statErr = os.Stat(filePath)
+	if statErr != nil {
+		fmt.Println("⚠️ Could not stat file after recording:", statErr)
+		_ = os.Remove(filePath)
+		return
+	} else if fi.Size() < 1024 {
+		fmt.Println("⚠️ File too small (likely failed). Deleting:", fi.Size())
+		_ = os.Remove(filePath)
+		return
+	}
 
-		// Kill the process if it's still running
-		if cmd.Process != nil {
-			cmd.Process.Kill()
-		}
+	fmt.Printf("✅ Saved: %s (Duration: %.2fs, Size: %d bytes)\n", filePath, elapsed.Seconds(), fi.Size())
+}
 
-		// Wait a bit for process to be killed
-		go func() {
-			<-done // Consume the error from the killed process
-		}()
-
+// isRTSPReachable does a TCP connect to the RTSP host:port (default port 554 if none)
+func isRTSPReachable(rtspURL string, timeout time.Duration) bool {
+	u, err := url.Parse(rtspURL)
+	if err != nil {
+		fmt.Println("Invalid RTSP URL:", err)
 		return false
 	}
+	host := u.Host
+	if host == "" {
+		fmt.Println("RTSP URL missing host")
+		return false
+	}
+	// if host has no port, default to 554
+	if _, _, err := net.SplitHostPort(host); err != nil {
+		host = net.JoinHostPort(host, "554")
+	}
+	conn, err := net.DialTimeout("tcp", host, timeout)
+	if err != nil {
+		// unreachable quickly
+		return false
+	}
+	_ = conn.Close()
+	return true
+}
+
+// folder creates or returns today's folder name (creates dir if missing)
+func folder() string {
+	// ensure base path exists
+	if _, err := os.Stat(env.Path); os.IsNotExist(err) {
+		if err := os.MkdirAll(env.Path, 0755); err != nil {
+			fmt.Println("Error creating base path:", err)
+			return ""
+		}
+	}
+
+	folderName := nameProvider("folder")
+	dirPath := filepath.Join(env.Path, folderName)
+	if _, err := os.Stat(dirPath); os.IsNotExist(err) {
+		if err := os.Mkdir(dirPath, 0755); err != nil {
+			fmt.Println("Error creating directory:", err)
+			return ""
+		}
+		fmt.Println("📂 Created folder:", dirPath)
+	}
+	return folderName
+}
+
+// nameProvider returns folder (YYYY-MM-DD) or file (HH-MM-SS) names
+func nameProvider(typ string) string {
+	times := time.Now().In(time.FixedZone("Asia/Kolkata", 5*60*60+30*60))
+	if typ == "folder" {
+		return fmt.Sprintf("%d-%02d-%02d", times.Year(), times.Month(), times.Day())
+	}
+	return fmt.Sprintf("%02d-%02d-%02d", times.Hour(), times.Minute(), times.Second())
 }
