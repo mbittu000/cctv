@@ -476,9 +476,7 @@ export default function Home() {
           style: "destructive",
           onPress: async () => {
             try {
-              await axios.delete(
-                `http://192.168.31.77:8080/deleteDate?date=${date}`
-              );
+              await axios.delete(`${api.baseURL}/deleteDate?date=${date}`);
 
               // Refresh dates list
               const datesObj = await api.getdates();
