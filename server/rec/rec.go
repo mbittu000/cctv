@@ -48,14 +48,16 @@ func Work() {
 		"-rtsp_transport", "tcp",
 		"-i", env.Cam,
 		"-use_wallclock_as_timestamps", "1",
-		"-c:v", "copy",
+		"-c:v", "libx264", // Replace "copy" with H.264 encoder
+		"-crf", "38", // Quality control (23-28 recommended)
+		"-preset", "fast", // Encoding speed vs compression efficiency
 		"-c:a", "aac",
 		"-avoid_negative_ts", "make_zero",
 		"-fflags", "+genpts",
 		"-fs", "18M",
 		"-movflags", "+faststart",
-		"-t", "60", // exact recording duration
-		"-y", // overwrite existing files
+		"-t", "600",
+		"-y",
 		filePath,
 	)
 
